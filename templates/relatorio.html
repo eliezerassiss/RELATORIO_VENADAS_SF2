@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Relatório Gerado</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .container-fluid { margin-top: 20px; }
+        .tab-content { background-color: #fff; padding: 20px; border: 1px solid #dee2e6; border-top: none; }
+        .table { font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <h1 class="mb-4 text-success">✅ Relatório Gerado com Sucesso</h1>
+
+        <ul class="nav nav-tabs" id="reportTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="geral-tab" data-bs-toggle="tab" data-bs-target="#geral" type="button" role="tab" aria-controls="geral" aria-selected="true">GERAL</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="lancamentos-tab" data-bs-toggle="tab" data-bs-target="#lancamentos" type="button" role="tab" aria-controls="lancamentos" aria-selected="false">LANÇAMENTOS</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="ranking-tab" data-bs-toggle="tab" data-bs-target="#ranking" type="button" role="tab" aria-controls="ranking" aria-selected="false">RANKING</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="mesas-cad-tab" data-bs-toggle="tab" data-bs-target="#mesas-cad" type="button" role="tab" aria-controls="mesas-cad" aria-selected="false">MESAS_CAD</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="itens-del-tab" data-bs-toggle="tab" data-bs-target="#itens-del" type="button" role="tab" aria-controls="itens-del" aria-selected="false">ITENS_DELETADO</button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="reportTabsContent">
+            
+            <div class="tab-pane fade show active" id="geral" role="tabpanel" aria-labelledby="geral-tab">
+                <h3>GERAL</h3>
+                <p>Resumo dos valores calculados:</p>
+                {{ geral | safe }}
+                <small class="text-muted">* Os valores são calculados usando as fórmulas: Valor Total = SUM(Lançamentos[valor total]), Comissão = (Valor Total * 0.06) + 140, Taxa = Valor Total * 0.04.</small>
+            </div>
+
+            <div class="tab-pane fade" id="lancamentos" role="tabpanel" aria-labelledby="lancamentos-tab">
+                <h3>LANÇAMENTOS</h3>
+                {{ lancamentos | safe }}
+            </div>
+
+            <div class="tab-pane fade" id="ranking" role="tabpanel" aria-labelledby="ranking-tab">
+                <h3>RANKING</h3>
+                {{ ranking | safe }}
+            </div>
+
+            <div class="tab-pane fade" id="mesas-cad" role="tabpanel" aria-labelledby="mesas-cad-tab">
+                <h3>MESAS_CAD</h3>
+                {{ mesas_cad | safe }}
+            </div>
+            
+            <div class="tab-pane fade" id="itens-del" role="tabpanel" aria-labelledby="itens-del-tab">
+                <h3>ITENS_DELETADO</h3>
+                {{ itens_del | safe }}
+            </div>
+        </div>
+
+        <p class="mt-4"><a href="/" class="btn btn-secondary">← Voltar e Carregar Novos Arquivos</a></p>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
