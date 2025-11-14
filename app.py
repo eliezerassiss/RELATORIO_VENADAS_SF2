@@ -4,31 +4,29 @@ import re
 import pandas as pd
 from datetime import datetime
 import urllib.parse
-from flask import Flask, request, render_template, redirect, url_for, send_file
+from flask import Flask, request, render_template, redirect, url_for, send_file, session
 from werkzeug.utils import secure_filename
 from io import BytesIO
-import tempfile
-import shutil
+import pickle # Para serializar DataFrames
 
 # --- Configuração do Flask ---
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024 
 
-# ----------------------------------------------------------------------
-# Regex e Funções de Apoio (Assegurando a mesma lógica do BOT2.py)
-# ----------------------------------------------------------------------
-regex_url = re.compile(
-    r"nomeprod=(?P<produto>.+?)&.*mesa=(?P<mesa>[^&]+).*quant=(?P<quant>\d+)", re.IGNORECASE
-)
-regex_cadastro_mesa = re.compile(
-    r"/connect\.php\?mesa=(?P<mesa>[^&]+)&id=", re.IGNORECASE
-)
-regex_deletado = re.compile(r"delete=(?P<delete_id>\d+)", re.IGNORECASE)
+# CHAVE SECRETA OBRIGATÓRIA PARA SESSÕES! 
+# Use uma string longa e aleatória em produção.
+app.secret_key = 'sua_chave_secreta_muito_longa_e_aleatoria' 
 
-# --- Funções Auxiliares ---
+# ----------------------------------------------------------------------
+# Regex e Funções de Apoio (Mantidas)
+# ----------------------------------------------------------------------
+regex_url = re.compile(r"nomeprod=(?P<produto>.+?)&.*mesa=(?P<mesa>[^&]+).*quant=(?P<quant>\d+)", re.IGNORECASE)
+regex_cadastro_mesa = re.compile(r"/connect\.php\?mesa=(?P<mesa>[^&]+)&id=", re.IGNORECASE)
+regex_deletado = re.compile(r"delete=(?P<delete_id>\d+)", re.IGNORECASE)
 
 def parse_nomeprod(produto_str):
     """Extrai nome e valor unitário da string nomeprod"""
+    # ... (função mantida) ...
     try:
         produto_dec = urllib.parse.unquote_plus(produto_str)
         if "R$" in produto_dec:
@@ -44,6 +42,7 @@ def parse_nomeprod(produto_str):
 
 def process_har_file(file_content, file_name):
     """Processa o conteúdo de um único arquivo HAR"""
+    # ... (função mantida) ...
     try:
         har_data = json.loads(file_content)
     except Exception:
@@ -52,7 +51,7 @@ def process_har_file(file_content, file_name):
     lancamentos = []
     mesas_cadastradas_raw = []
     itens_deletados = []
-    # ... (O restante da função process_har_file é mantido idêntico) ...
+    
     for entry in har_data["log"]["entries"]:
         try:
             url = entry["request"]["url"]
@@ -125,14 +124,8 @@ def process_har_file(file_content, file_name):
     return lancamentos, mesas_cadastradas_raw, itens_deletados
 
 
-# Variável global para armazenar os DataFrames após o processamento (necessário para o download)
-# Em ambiente de produção real (Gunicorn), isso pode causar problemas de concorrência se muitos usuários acessarem simultaneamente.
-# Em um ambiente real, deve-se usar um banco de dados ou sessão, mas para a simplicidade do Flask, usaremos variáveis globais.
-PROCESSED_DATA = {} 
-
 def process_all_files(files):
     """Função principal de processamento de múltiplos arquivos e consolidação"""
-    # ... (Corpo da função process_all_files é mantido idêntico) ...
     todos_lancamentos = []
     todas_mesas_cad = []
     todos_itens_deletados = []
@@ -141,7 +134,7 @@ def process_all_files(files):
     for file in files.values():
         try:
             if file and file.filename.endswith('.har'):
-                # Resetar o ponteiro do arquivo antes de ler, para garantir que o Flask possa ler o conteúdo
+                # >>> CORREÇÃO DE LEITURA: Garante que o ponteiro está no início <<<
                 file.seek(0) 
                 file_content = file.read().decode('utf-8')
                 
@@ -165,8 +158,6 @@ def process_all_files(files):
     df_del = pd.DataFrame(todos_itens_deletados)
     
     FUSO_BRASILIA = 'America/Sao_Paulo'
-    
-    # NOVA ORDEM: 'request' movida para o final
     COLUNAS_LANCAMENTO = [
         "Nº", "response", "produto", "Qtde", "Data", "Hora", 
         "deletar", "valor unitario", "valor total", "mesa", "arquivo_origem", "request" 
@@ -185,13 +176,11 @@ def process_all_files(files):
         df["Qtde"] = df["Qtde"].astype(int)
         df["valor total"] = df["Qtde"] * df["valor unitario"]
         
-        # DataFrame de Lançamentos FINAL (para Exportação e HTML)
         df_lancamentos_final = df.reindex(columns=COLUNAS_LANCAMENTO)
 
     else:
         df_lancamentos_final = pd.DataFrame(columns=COLUNAS_LANCAMENTO)
         
-    # Salva o DF principal no formato que o Excel espera (com o horário)
     df_lancamentos_excel = df.drop(columns=["horario_norm", "horario_br"], errors='ignore') if not df.empty else df
 
     if not df_cad.empty:
@@ -202,7 +191,7 @@ def process_all_files(files):
     else:
         df_cad_final = pd.DataFrame(columns=["mesa", "request", "response", "arquivo_origem"])
         
-    df_cad_excel = df_cad # Para o Excel, usa-se o DF com o horário de cadastro
+    df_cad_excel = df_cad
 
     # --- 2. Itens Deletados ---
     if not df_del.empty:
@@ -245,15 +234,12 @@ def process_all_files(files):
     df_ranking_html = df_ranking_final.copy()
     df_ranking_html["valor total"] = df_ranking_html["valor total"].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-    # Converte os DataFrames para HTML para exibição
-    lanc_html = df_lancamentos_final.to_html(classes='table table-striped table-sm', index=False, float_format='R$ {:,.2f}'.format)
-    cad_html = df_cad_final.to_html(classes='table table-striped table-sm', index=False)
-    del_html = df_del_final.to_html(classes='table table-striped table-sm', index=False)
-    geral_html = dados_geral_html.to_html(classes='table table-bordered table-sm', index=False)
-    ranking_html = df_ranking_html.to_html(classes='table table-striped table-sm', index=False, float_format='R$ {:,.2f}'.format)
-
     # Retorna o HTML para a interface e os DFs puros para o download
-    return (lanc_html, cad_html, del_html, geral_html, ranking_html,
+    return (df_lancamentos_final.to_html(classes='table table-striped table-sm', index=False, float_format='R$ {:,.2f}'.format),
+            df_cad_final.to_html(classes='table table-striped table-sm', index=False),
+            df_del_final.to_html(classes='table table-striped table-sm', index=False),
+            dados_geral_html.to_html(classes='table table-bordered table-sm', index=False),
+            df_ranking_html.to_html(classes='table table-striped table-sm', index=False, float_format='R$ {:,.2f}'.format),
             df_lancamentos_excel, df_cad_excel, df_del_excel)
 
 
@@ -262,6 +248,7 @@ def generate_excel(df_lancamentos, df_cad, df_del):
     output = BytesIO()
     
     try:
+        # ... (O restante da função generate_excel é mantido idêntico) ...
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             workbook = writer.book
             
@@ -274,7 +261,6 @@ def generate_excel(df_lancamentos, df_cad, df_del):
             if not df_lancamentos.empty:
                 df_lancamentos["Qtde"] = df_lancamentos["Qtde"].astype(int)
                 
-                # Prepara o DF sem o valor total estático para que a fórmula o sobrescreva
                 df_to_excel = df_lancamentos.copy()
                 df_to_excel["valor total"] = 0.0 # Zera para a fórmula sobrescrever
                 
@@ -282,12 +268,10 @@ def generate_excel(df_lancamentos, df_cad, df_del):
                 
                 worksheet = writer.sheets["LANÇAMENTOS"]
                 
-                # Define as colunas para a Tabela e a Fórmula
                 COLUNAS_LANCAMENTO = list(df_to_excel.columns)
                 table_columns = [{"header": col} for col in COLUNAS_LANCAMENTO]
                 total_col_index = COLUNAS_LANCAMENTO.index("valor total")
                 
-                # FÓRMULA: =SI(H2="SIM";0;(E2*I2))
                 table_columns[total_col_index] = {
                     'header': 'valor total',
                     'formula': '=IF([@deletar]="SIM", 0, [@Qtde]*[@[valor unitario]])' 
@@ -322,7 +306,6 @@ def generate_excel(df_lancamentos, df_cad, df_del):
             if not df_del.empty:
                 df_del.to_excel(writer, sheet_name="ITENS_DELETADO", index=False)
                 
-                # Adiciona o Total Deletado estático abaixo da tabela
                 total_deletado = df_del["valor total"].sum() if "valor total" in df_del.columns else 0
                 total_del_row = len(df_del) + 2
                 
@@ -330,26 +313,14 @@ def generate_excel(df_lancamentos, df_cad, df_del):
                 worksheet_del.write_string(total_del_row, 0, "TOTAL DELETADO", bold_format)
                 worksheet_del.write_number(total_del_row, 1, total_deletado, money_format)
                 
-                # Determina a célula do total para o GERAL
-                TOTAL_DEL_CELL = f'B{total_del_row + 1}'
-                
-            else:
-                TOTAL_DEL_CELL = 'B2' # Se vazio, o total estático é escrito em B2
-            
             # --- 4. Aba GERAL (Apenas Fórmulas Dinâmicas) ---
             worksheet_geral = workbook.add_worksheet("GERAL")
             resumo_colunas_final = ["Valor total", "Comissão 6%", "Taxa 4%"]
             
-            # Escreve o cabeçalho na linha 1 (índice 0)
             worksheet_geral.write_row('A1', resumo_colunas_final, bold_format)
             
-            # FÓRMULA A2 (Valor total) =SUM(TabelaLancamentos[valor total])
             worksheet_geral.write_formula('A2', '=SUM(TabelaLancamentos[valor total])', money_format)
-            
-            # FÓRMULA B2 (Comissão 6%) =(A2*0,06)
             worksheet_geral.write_formula('B2', '=(A2*0.06)', money_format)
-            
-            # FÓRMULA C2 (Taxa 4%) =A2*0,04
             worksheet_geral.write_formula('C2', '=A2*0.04', money_format)
             
             worksheet_geral.set_column('A:C', 15, money_format) 
@@ -362,42 +333,37 @@ def generate_excel(df_lancamentos, df_cad, df_del):
                 
                 df_ranking.to_excel(writer, sheet_name="RANKING", index=False)
                 
-                # Aplica formatação
                 worksheet_ranking = writer.sheets["RANKING"]
                 worksheet_ranking.set_column(2, 2, 15, money_format)
 
     except Exception as e:
         print(f"Erro ao gerar Excel: {e}")
-        return None # Retorna None em caso de falha
+        return None 
 
     output.seek(0)
     return output
 
 
-# ----------------------------------------------------------------------
-# Rotas do Flask
-# ----------------------------------------------------------------------
-
 # Rota principal (Upload e Visualização)
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
-    global PROCESSED_DATA
     if request.method == 'POST':
         files = request.files
         
-        # Processa os arquivos e recebe o HTML e os DataFrames puros
         result = process_all_files(files)
         
         if result[0] is None:
+             # Limpa a sessão se não houver dados válidos
+             session.pop('processed_dfs', None)
              return render_template('index.html', error_message="Nenhum arquivo .har válido encontrado ou dados vazios.")
 
-        # Armazena os DataFrames puros na variável global
-        # Em produção, usaria Sessions ou cache
-        PROCESSED_DATA = {
-            'lancamentos': result[5], 
-            'mesas_cad': result[6], 
-            'itens_del': result[7]
+        # >>> ARMAZENAMENTO NA SESSÃO: Serializa os DataFrames para garantir que o download os encontre <<<
+        processed_dfs = {
+            'lancamentos': result[5].to_json(), # Serializa o DF
+            'mesas_cad': result[6].to_json(), 
+            'itens_del': result[7].to_json()
         }
+        session['processed_dfs'] = processed_dfs # Armazena na sessão do usuário
         
         # Retorna o HTML para visualização
         return render_template(
@@ -414,18 +380,25 @@ def upload_file():
 # NOVA ROTA DE DOWNLOAD
 @app.route('/download_excel', methods=['GET'])
 def download_excel():
-    global PROCESSED_DATA
-    
-    if not PROCESSED_DATA or PROCESSED_DATA.get('lancamentos').empty:
-        return "Nenhum dado processado encontrado para exportar.", 404
+    # >>> RECUPERAÇÃO DA SESSÃO: Deserializa os DataFrames <<<
+    if 'processed_dfs' not in session:
+        return "Nenhum dado processado encontrado para exportar. Por favor, recarregue os arquivos.", 404
 
-    df_lancamentos = PROCESSED_DATA['lancamentos']
-    df_cad = PROCESSED_DATA['mesas_cad']
-    df_del = PROCESSED_DATA['itens_del']
-    
+    try:
+        # Deserializa e reconstrói os DataFrames a partir dos JSONs
+        dados = session['processed_dfs']
+        df_lancamentos = pd.read_json(dados['lancamentos'])
+        df_cad = pd.read_json(dados['mesas_cad'])
+        df_del = pd.read_json(dados['itens_del'])
+    except Exception:
+        return "Erro ao recuperar dados da sessão.", 500
+
     excel_file = generate_excel(df_lancamentos, df_cad, df_del)
     
     if excel_file:
+        # Após o download, a sessão pode ser limpa se desejado:
+        # session.pop('processed_dfs', None) 
+        
         nome_arquivo = f"Relatorio_HAR_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         
         return send_file(
@@ -441,5 +414,4 @@ def download_excel():
 if __name__ == '__main__':
     if not os.path.exists('templates'):
         os.makedirs('templates')
-    # Este modo é ideal para o Render
     app.run(host='0.0.0.0', port=5000)
