@@ -2,34 +2,78 @@ import json
 import os
 import re
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import urllib.parse
-from flask import Flask, request, render_template, redirect, url_for, send_file, session
+from flask import Flask, request, render_template, redirect, url_for, send_file, session, flash
 from werkzeug.utils import secure_filename
 from io import BytesIO
-import pickle # Não é mais o método principal, mas mantido.
+import pickle # Usado para serializar DataFrames no banco
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+import xlsxwriter # Necessário para a função generate_excel
 
-# --- Configuração do Flask ---
+# --- Configuração do Flask e Banco de Dados ---
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024 
-
-# CHAVE SECRETA OBRIGATÓRIA PARA SESSÕES! 
-# Use uma string longa e aleatória em produção.
 app.secret_key = 'sua_chave_secreta_muito_longa_e_aleatoria_para_o_render' 
 
+# Configuração do Banco de Dados
+# >>> ATENÇÃO: Mude esta linha para a URL do seu PostgreSQL no Render em produção! <<<
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db' 
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(weeks=3) # Duração de 3 semanas
+
+db = SQLAlchemy(app)
+
+# Configuração de Login
+login_manager = LoginManager(app)
+login_manager.login_view = 'login' 
+login_manager.login_message = "Por favor, faça login para acessar esta página."
+
 # ----------------------------------------------------------------------
-# Regex e Funções de Apoio
+# 1. MODELOS DO BANCO DE DADOS
 # ----------------------------------------------------------------------
-regex_url = re.compile(
-    r"nomeprod=(?P<produto>.+?)&.*mesa=(?P<mesa>[^&]+).*quant=(?P<quant>\d+)", re.IGNORECASE
-)
-regex_cadastro_mesa = re.compile(
-    r"/connect\.php\?mesa=(?P<mesa>[^&]+)&id=", re.IGNORECASE
-)
+
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128))
+    is_admin = db.Column(db.Boolean, default=False)
+    is_approved = db.Column(db.Boolean, default=False) 
+    
+    files = db.relationship('HarFile', backref='owner', lazy='dynamic')
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+class HarFile(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(100), nullable=False)
+    data_pickle = db.Column(db.LargeBinary, nullable=False) 
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    expiration_date = db.Column(db.DateTime, default=datetime.utcnow + timedelta(weeks=3))
+    
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) 
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
+
+
+# ----------------------------------------------------------------------
+# 2. LÓGICA DE PROCESSAMENTO HAR E EXCEL
+# ----------------------------------------------------------------------
+
+regex_url = re.compile(r"nomeprod=(?P<produto>.+?)&.*mesa=(?P<mesa>[^&]+).*quant=(?P<quant>\d+)", re.IGNORECASE)
+regex_cadastro_mesa = re.compile(r"/connect\.php\?mesa=(?P<mesa>[^&]+)&id=", re.IGNORECASE)
 regex_deletado = re.compile(r"delete=(?P<delete_id>\d+)", re.IGNORECASE)
 
 def parse_nomeprod(produto_str):
-    """Extrai nome e valor unitário da string nomeprod"""
     try:
         produto_dec = urllib.parse.unquote_plus(produto_str)
         if "R$" in produto_dec:
@@ -44,7 +88,7 @@ def parse_nomeprod(produto_str):
         return produto_str, 0.0
 
 def process_har_file(file_content, file_name):
-    """Processa o conteúdo de um único arquivo HAR"""
+    # ... (O restante da função process_har_file é mantido idêntico) ...
     try:
         har_data = json.loads(file_content)
     except Exception:
@@ -127,16 +171,14 @@ def process_har_file(file_content, file_name):
 
 
 def process_all_files(files):
-    """Função principal de processamento de múltiplos arquivos e consolidação"""
+    # ... (Processamento principal mantido) ...
     todos_lancamentos = []
     todas_mesas_cad = []
     todos_itens_deletados = []
     
-    # Processa todos os arquivos carregados com tratamento de erro e correção de ponteiro
     for file in files.values():
         try:
             if file and file.filename.endswith('.har'):
-                # CORREÇÃO DE LEITURA: Garante que o ponteiro está no início para cada arquivo
                 file.seek(0) 
                 file_content = file.read().decode('utf-8')
                 
@@ -145,11 +187,7 @@ def process_all_files(files):
                 todas_mesas_cad.extend(cad)
                 todos_itens_deletados.extend(delet)
             
-        except UnicodeDecodeError:
-            print(f"ERRO: Não foi possível decodificar o arquivo {file.filename}. Pulando.")
-            continue
-        except Exception as e:
-            print(f"ERRO DESCONHECIDO ao processar {file.filename}: {e}. Pulando.")
+        except Exception:
             continue
 
     if not todos_lancamentos and not todas_mesas_cad and not todos_itens_deletados:
@@ -165,7 +203,6 @@ def process_all_files(files):
         "deletar", "valor unitario", "valor total", "mesa", "arquivo_origem", "request" 
     ]
     
-    # --- 1. Processamento e Normalização ---
     if not df.empty:
         df["horario"] = pd.to_datetime(df["horario"], errors="coerce", utc=True)
         df["horario_br"] = df["horario"].dt.tz_convert(FUSO_BRASILIA)
@@ -179,14 +216,13 @@ def process_all_files(files):
         df["valor total"] = df["Qtde"] * df["valor unitario"]
         
         df_lancamentos_final = df.reindex(columns=COLUNAS_LANCAMENTO)
-
     else:
         df_lancamentos_final = pd.DataFrame(columns=COLUNAS_LANCAMENTO)
         
     df_lancamentos_excel = df.drop(columns=["horario_norm", "horario_br"], errors='ignore') if not df.empty else df
 
     if not df_cad.empty:
-        df_cad["horario_cadastro"] = pd.to_datetime(df["horario"], errors="coerce", utc=True)
+        df_cad["horario_cadastro"] = pd.to_datetime(df_cad["horario_cadastro"], errors="coerce", utc=True)
         df_cad["horario_cadastro"] = df_cad["horario_cadastro"].dt.tz_convert(FUSO_BRASILIA).dt.tz_localize(None)
         df_cad = df_cad.sort_values(by="horario_cadastro").drop_duplicates(subset=["mesa"], keep="first").reset_index(drop=True)
         df_cad_final = df_cad.drop(columns=["horario_cadastro"], errors='ignore')
@@ -195,7 +231,6 @@ def process_all_files(files):
         
     df_cad_excel = df_cad
 
-    # --- 2. Itens Deletados ---
     if not df_del.empty:
         total_deletado = df_del["valor total"].sum() if "valor total" in df_del.columns else 0
         df_del_final = df_del.drop(columns=["horario"], errors='ignore')
@@ -205,26 +240,17 @@ def process_all_files(files):
         df_del_excel = df_del_final
         total_deletado = 0
 
-
-    # --- 3. Aba GERAL ---
     total_valor = df["valor total"].sum() if not df.empty else 0
     comissao = total_valor * 0.06
     taxa = total_valor * 0.04
     
-    dados_geral = pd.DataFrame({
-        "Valor total": [total_valor],
-        "Comissão 6%": [comissao],
-        "Taxa 4%": [taxa]
-    })
+    dados_geral = pd.DataFrame({"Valor total": [total_valor], "Comissão 6%": [comissao], "Taxa 4%": [taxa]})
     
-    # Prepara o DataFrame GERAL para HTML
     dados_geral_html = dados_geral.copy()
     for col in dados_geral_html.columns:
         if "Valor" in col or "Comissão" in col or "Taxa" in col:
             dados_geral_html[col] = dados_geral_html[col].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-
-    # --- 4. Aba RANKING ---
     if not df.empty:
         df_ranking = df.groupby("mesa")["valor total"].sum().reset_index().sort_values(by="valor total", ascending=False)
         df_ranking["Posição"] = df_ranking.index + 1
@@ -232,37 +258,37 @@ def process_all_files(files):
     else:
         df_ranking_final = pd.DataFrame(columns=["Posição", "mesa", "valor total"])
 
-    # Prepara o DataFrame RANKING para HTML
     df_ranking_html = df_ranking_final.copy()
     df_ranking_html["valor total"] = df_ranking_html["valor total"].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-    # Retorna o HTML para a interface e os DFs puros para o download
-    return (df_lancamentos_final.to_html(classes='table table-striped table-sm', index=False, float_format='R$ {:,.2f}'.format),
-            df_cad_final.to_html(classes='table table-striped table-sm', index=False),
-            df_del_final.to_html(classes='table table-striped table-sm', index=False),
-            dados_geral_html.to_html(classes='table table-bordered table-sm', index=False),
-            df_ranking_html.to_html(classes='table table-striped table-sm', index=False, float_format='R$ {:,.2f}'.format),
+    lanc_html = df_lancamentos_final.to_html(classes='table table-striped table-sm', index=False, float_format='R$ {:,.2f}'.format)
+    cad_html = df_cad_final.to_html(classes='table table-striped table-sm', index=False)
+    del_html = df_del_final.to_html(classes='table table-striped table-sm', index=False)
+    geral_html = dados_geral_html.to_html(classes='table table-bordered table-sm', index=False)
+    ranking_html = df_ranking_html.to_html(classes='table table-striped table-sm', index=False, float_format='R$ {:,.2f}'.format)
+
+    return (lanc_html, cad_html, del_html, geral_html, ranking_html,
             df_lancamentos_excel, df_cad_excel, df_del_excel)
 
 
 def generate_excel(df_lancamentos, df_cad, df_del):
-    """Gera o arquivo Excel em memória com as abas e formatação do BOT2.py"""
+    """Gera o arquivo Excel em memória (Requer xlsxwriter)"""
     output = BytesIO()
     
     try:
+        import xlsxwriter
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # Formatos
             money_format = workbook.add_format({'num_format': 'R$ #,##0.00'})
             number_format = workbook.add_format({'num_format': '#,##0'}) 
             bold_format = workbook.add_format({'bold': True})
             
-            # --- 1. Aba LANÇAMENTOS (Com Tabela e Fórmula) ---
+            # --- 1. Aba LANÇAMENTOS ---
             if not df_lancamentos.empty:
                 df_lancamentos["Qtde"] = df_lancamentos["Qtde"].astype(int)
                 df_to_excel = df_lancamentos.copy()
-                df_to_excel["valor total"] = 0.0 # Zera para a fórmula sobrescrever
+                df_to_excel["valor total"] = 0.0
                 df_to_excel.to_excel(writer, sheet_name="LANÇAMENTOS", index=False, startrow=0, startcol=0)
                 
                 worksheet = writer.sheets["LANÇAMENTOS"]
@@ -302,7 +328,7 @@ def generate_excel(df_lancamentos, df_cad, df_del):
                 worksheet_del.write_string(total_del_row, 0, "TOTAL DELETADO", bold_format)
                 worksheet_del.write_number(total_del_row, 1, total_deletado, money_format)
                 
-            # --- 4. Aba GERAL (Apenas Fórmulas Dinâmicas) ---
+            # --- 4. Aba GERAL ---
             worksheet_geral = workbook.add_worksheet("GERAL")
             resumo_colunas_final = ["Valor total", "Comissão 6%", "Taxa 4%"]
             
@@ -324,38 +350,62 @@ def generate_excel(df_lancamentos, df_cad, df_del):
                 
                 worksheet_ranking = writer.sheets["RANKING"]
                 worksheet_ranking.set_column(2, 2, 15, money_format)
+        
+        output.seek(0)
+        return output
 
     except Exception as e:
-        print(f"Erro ao gerar Excel: {e}")
+        print(f"Erro fatal ao gerar Excel: {e}")
         return None 
 
-    output.seek(0)
-    return output
 
+# ----------------------------------------------------------------------
+# 3. ROTAS DA APLICAÇÃO (Com Autenticação e Persistência de Dados)
+# ----------------------------------------------------------------------
 
 # Rota principal (Upload e Visualização)
 @app.route('/', methods=['GET', 'POST'])
+@login_required 
 def upload_file():
+    if not current_user.is_approved:
+        flash('Sua conta ainda não foi aprovada pelo administrador.', 'warning')
+        return redirect(url_for('logout'))
+
     if request.method == 'POST':
         files = request.files
-        
         result = process_all_files(files)
         
         if result[0] is None:
-             session.pop('processed_dfs', None)
-             return render_template('index.html', error_message="Nenhum arquivo .har válido encontrado ou dados vazios.")
+             session.pop('current_file_id', None)
+             flash('Nenhum arquivo .har válido encontrado ou dados vazios.', 'danger')
+             return render_template('index.html')
 
-        # >>> ARMAZENAMENTO NA SESSÃO COM 'split' para robustez <<<
+        # SALVA OS DFs NO BANCO (Persistência)
         try:
-            processed_dfs = {
-                'lancamentos': result[5].to_json(orient='split', date_format='iso'),
-                'mesas_cad': result[6].to_json(orient='split', date_format='iso'), 
-                'itens_del': result[7].to_json(orient='split', date_format='iso')
+            data_to_store = {
+                'lancamentos': result[5], 
+                'mesas_cad': result[6], 
+                'itens_del': result[7]
             }
-            session['processed_dfs'] = processed_dfs
+            # Serializa os DataFrames em um único objeto binário usando pickle
+            data_pickle = pickle.dumps(data_to_store)
+
+            # Cria a entrada no banco
+            new_file = HarFile(
+                filename=f"Relatorio_HAR_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                data_pickle=data_pickle,
+                user_id=current_user.id 
+            )
+            db.session.add(new_file)
+            db.session.commit()
+            
+            # Armazena o ID do arquivo na sessão para o download
+            session['current_file_id'] = new_file.id
+            
         except Exception as e:
-            print(f"Erro na serialização para sessão: {e}")
-            return render_template('index.html', error_message="Erro ao salvar dados na sessão. Tente arquivos menores.")
+            flash(f"Erro ao salvar dados no banco de dados: {e}", 'danger')
+            return redirect(url_for('upload_file'))
+
 
         # Retorna o HTML para visualização
         return render_template(
@@ -369,46 +419,163 @@ def upload_file():
         
     return render_template('index.html')
 
-# NOVA ROTA DE DOWNLOAD
+# ROTA DE DOWNLOAD (Gera o Excel a partir do BD)
 @app.route('/download_excel', methods=['GET'])
+@login_required
 def download_excel():
-    # >>> RECUPERAÇÃO DA SESSÃO COM 'split' e Conversão de Tipos <<<
-    if 'processed_dfs' not in session:
-        return "Nenhum dado processado encontrado para exportar. Por favor, recarregue os arquivos.", 404
+    file_id = session.get('current_file_id')
+    
+    if not file_id:
+        flash("Nenhum arquivo recente encontrado para exportar. Por favor, faça um novo upload.", 'danger')
+        return redirect(url_for('upload_file'))
+
+    # Busca o arquivo no BD, verificando se pertence ao usuário
+    har_file = HarFile.query.filter_by(id=file_id, user_id=current_user.id).first()
+    
+    if not har_file:
+        flash("Arquivo não encontrado, expirado ou acesso negado.", 'danger')
+        session.pop('current_file_id', None) 
+        return redirect(url_for('upload_file'))
 
     try:
-        dados = session['processed_dfs']
-        # Deserializa forçando o formato 'split'
-        df_lancamentos = pd.read_json(dados['lancamentos'], orient='split')
-        df_cad = pd.read_json(dados['mesas_cad'], orient='split')
-        df_del = pd.read_json(dados['itens_del'], orient='split')
+        # Deserializa o objeto binário para recuperar os DataFrames
+        dados = pickle.loads(har_file.data_pickle)
         
-        # Conversão explícita de Data/Hora para o Excel
-        df_lancamentos['horario'] = pd.to_datetime(df_lancamentos['horario'], errors='coerce')
-        if 'horario_cadastro' in df_cad.columns:
-             df_cad['horario_cadastro'] = pd.to_datetime(df_cad['horario_cadastro'], errors='coerce')
-        df_del['horario'] = pd.to_datetime(df_del['horario'], errors='coerce')
+        df_lancamentos = dados['lancamentos']
+        df_cad = dados['mesas_cad']
+        df_del = dados['itens_del']
         
     except Exception as e:
-        print(f"Erro ao recuperar dados da sessão/deserializar: {e}")
-        return "Erro ao recuperar dados da sessão. Tente recarregar os arquivos.", 500
+        print(f"Erro na desserialização do pickle: {e}")
+        flash("Erro interno ao recuperar dados persistidos.", 'danger')
+        return redirect(url_for('upload_file'))
 
     excel_file = generate_excel(df_lancamentos, df_cad, df_del)
     
     if excel_file:
-        nome_arquivo = f"Relatorio_HAR_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        
+        session.pop('current_file_id', None) 
         return send_file(
             excel_file,
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             as_attachment=True,
-            download_name=nome_arquivo
+            download_name=har_file.filename
         )
     else:
-        return "Erro interno ao gerar o arquivo Excel.", 500
+        flash("Erro interno ao gerar o arquivo Excel.", 'danger')
+        return redirect(url_for('upload_file'))
+
+
+# --- ROTAS DE AUTENTICAÇÃO E GERENCIAMENTO (Mantidas) ---
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('upload_file'))
+        
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        user = User.query.filter_by(username=username).first()
+        
+        if user and user.check_password(password):
+            if not user.is_approved:
+                flash('Sua conta aguarda aprovação do administrador.', 'warning')
+                return redirect(url_for('login'))
+            
+            login_user(user, remember=True)
+            return redirect(url_for('upload_file'))
+        else:
+            flash('Login inválido. Verifique o nome de usuário e senha.', 'danger')
+
+    return render_template('login.html') 
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if current_user.is_authenticated:
+        return redirect(url_for('upload_file'))
+        
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if User.query.filter_by(username=username).first():
+            flash('Nome de usuário já existe.', 'danger')
+        elif not password:
+            flash('A senha não pode ser vazia.', 'danger')
+        else:
+            new_user = User(username=username)
+            new_user.set_password(password)
+            new_user.is_approved = False
+            
+            db.session.add(new_user)
+            db.session.commit()
+            flash('Sua conta foi criada e aguarda aprovação do administrador.', 'success')
+            return redirect(url_for('login'))
+
+    return render_template('register.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('Você foi desconectado.', 'success')
+    return redirect(url_for('login'))
+
+@app.route('/admin/users', methods=['GET', 'POST'])
+@login_required
+def manage_users():
+    if not current_user.is_admin:
+        flash('Acesso Negado.', 'danger')
+        return redirect(url_for('upload_file'))
+
+    if request.method == 'POST':
+        user_id = request.form.get('user_id', type=int)
+        action = request.form.get('action')
+        user = db.session.get(User, user_id)
+        
+        if user and user.id != current_user.id:
+            if action == 'accept':
+                user.is_approved = True
+                db.session.commit()
+                flash(f'Usuário {user.username} aprovado.', 'success')
+            elif action == 'delete':
+                HarFile.query.filter_by(user_id=user.id).delete()
+                db.session.delete(user)
+                db.session.commit()
+                flash(f'Usuário {user.username} deletado e arquivos removidos.', 'success')
+            elif action == 'reject':
+                user.is_approved = False
+                db.session.commit()
+                flash(f'Usuário {user.username} rejeitado e movido para pendente.', 'warning')
+                
+        return redirect(url_for('manage_users'))
+
+    users_pending = User.query.filter_by(is_approved=False).order_by(User.username).all()
+    users_active = User.query.filter_by(is_approved=True).order_by(User.username).all()
+
+    # Limpa arquivos expirados
+    expired_files = HarFile.query.filter(HarFile.expiration_date < datetime.utcnow()).delete()
+    db.session.commit()
+    
+    return render_template('manage_users.html', 
+                           pending=users_pending, 
+                           active=users_active,
+                           expired_count=expired_files)
 
 
 if __name__ == '__main__':
     if not os.path.exists('templates'):
         os.makedirs('templates')
+
+    with app.app_context():
+        db.create_all()
+        
+        # Cria o usuário administrador único
+        if not User.query.filter_by(is_admin=True).first():
+            admin_user = User(username='admin', is_admin=True, is_approved=True)
+            admin_user.set_password('SuaSenhaAdminSecreta123!') 
+            db.session.add(admin_user)
+            db.session.commit()
+            print(">>> Usuário 'admin' criado com a senha: SuaSenhaAdminSecreta123! <<<")
+    
     app.run(host='0.0.0.0', port=5000)

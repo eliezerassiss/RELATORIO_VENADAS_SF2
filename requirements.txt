@@ -2,3 +2,6 @@ Flask
 pandas
 gunicorn
 xlsxwriter
+Flask-SQLAlchemy  # Para interagir com o banco de dados
+Flask-Login       # Para gerenciar sessões de usuários
+werkzeug          # Já deve estar lá, mas necessário para hashes de senha
