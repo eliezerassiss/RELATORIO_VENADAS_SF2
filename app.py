@@ -7,7 +7,7 @@ import urllib.parse
 from flask import Flask, request, render_template, redirect, url_for, send_file, session
 from werkzeug.utils import secure_filename
 from io import BytesIO
-import pickle # Para serializar DataFrames
+import pickle # Não é mais o método principal, mas mantido.
 
 # --- Configuração do Flask ---
 app = Flask(__name__)
@@ -15,18 +15,21 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
 # CHAVE SECRETA OBRIGATÓRIA PARA SESSÕES! 
 # Use uma string longa e aleatória em produção.
-app.secret_key = 'sua_chave_secreta_muito_longa_e_aleatoria' 
+app.secret_key = 'sua_chave_secreta_muito_longa_e_aleatoria_para_o_render' 
 
 # ----------------------------------------------------------------------
-# Regex e Funções de Apoio (Mantidas)
+# Regex e Funções de Apoio
 # ----------------------------------------------------------------------
-regex_url = re.compile(r"nomeprod=(?P<produto>.+?)&.*mesa=(?P<mesa>[^&]+).*quant=(?P<quant>\d+)", re.IGNORECASE)
-regex_cadastro_mesa = re.compile(r"/connect\.php\?mesa=(?P<mesa>[^&]+)&id=", re.IGNORECASE)
+regex_url = re.compile(
+    r"nomeprod=(?P<produto>.+?)&.*mesa=(?P<mesa>[^&]+).*quant=(?P<quant>\d+)", re.IGNORECASE
+)
+regex_cadastro_mesa = re.compile(
+    r"/connect\.php\?mesa=(?P<mesa>[^&]+)&id=", re.IGNORECASE
+)
 regex_deletado = re.compile(r"delete=(?P<delete_id>\d+)", re.IGNORECASE)
 
 def parse_nomeprod(produto_str):
     """Extrai nome e valor unitário da string nomeprod"""
-    # ... (função mantida) ...
     try:
         produto_dec = urllib.parse.unquote_plus(produto_str)
         if "R$" in produto_dec:
@@ -42,7 +45,6 @@ def parse_nomeprod(produto_str):
 
 def process_har_file(file_content, file_name):
     """Processa o conteúdo de um único arquivo HAR"""
-    # ... (função mantida) ...
     try:
         har_data = json.loads(file_content)
     except Exception:
@@ -130,11 +132,11 @@ def process_all_files(files):
     todas_mesas_cad = []
     todos_itens_deletados = []
     
-    # Processa todos os arquivos carregados com tratamento de erro
+    # Processa todos os arquivos carregados com tratamento de erro e correção de ponteiro
     for file in files.values():
         try:
             if file and file.filename.endswith('.har'):
-                # >>> CORREÇÃO DE LEITURA: Garante que o ponteiro está no início <<<
+                # CORREÇÃO DE LEITURA: Garante que o ponteiro está no início para cada arquivo
                 file.seek(0) 
                 file_content = file.read().decode('utf-8')
                 
@@ -184,7 +186,7 @@ def process_all_files(files):
     df_lancamentos_excel = df.drop(columns=["horario_norm", "horario_br"], errors='ignore') if not df.empty else df
 
     if not df_cad.empty:
-        df_cad["horario_cadastro"] = pd.to_datetime(df_cad["horario_cadastro"], errors="coerce", utc=True)
+        df_cad["horario_cadastro"] = pd.to_datetime(df["horario"], errors="coerce", utc=True)
         df_cad["horario_cadastro"] = df_cad["horario_cadastro"].dt.tz_convert(FUSO_BRASILIA).dt.tz_localize(None)
         df_cad = df_cad.sort_values(by="horario_cadastro").drop_duplicates(subset=["mesa"], keep="first").reset_index(drop=True)
         df_cad_final = df_cad.drop(columns=["horario_cadastro"], errors='ignore')
@@ -248,7 +250,6 @@ def generate_excel(df_lancamentos, df_cad, df_del):
     output = BytesIO()
     
     try:
-        # ... (O restante da função generate_excel é mantido idêntico) ...
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             workbook = writer.book
             
@@ -260,14 +261,11 @@ def generate_excel(df_lancamentos, df_cad, df_del):
             # --- 1. Aba LANÇAMENTOS (Com Tabela e Fórmula) ---
             if not df_lancamentos.empty:
                 df_lancamentos["Qtde"] = df_lancamentos["Qtde"].astype(int)
-                
                 df_to_excel = df_lancamentos.copy()
                 df_to_excel["valor total"] = 0.0 # Zera para a fórmula sobrescrever
-                
                 df_to_excel.to_excel(writer, sheet_name="LANÇAMENTOS", index=False, startrow=0, startcol=0)
                 
                 worksheet = writer.sheets["LANÇAMENTOS"]
-                
                 COLUNAS_LANCAMENTO = list(df_to_excel.columns)
                 table_columns = [{"header": col} for col in COLUNAS_LANCAMENTO]
                 total_col_index = COLUNAS_LANCAMENTO.index("valor total")
@@ -280,16 +278,8 @@ def generate_excel(df_lancamentos, df_cad, df_del):
                 max_row = len(df_to_excel)
                 max_col = len(COLUNAS_LANCAMENTO) - 1 
                 
-                worksheet.add_table(
-                    0, 0, max_row, max_col, 
-                    {
-                        'columns': table_columns,
-                        'name': 'TabelaLancamentos',
-                        'style': 'TableStyleMedium9'
-                    }
-                )
+                worksheet.add_table(0, 0, max_row, max_col, {'columns': table_columns, 'name': 'TabelaLancamentos', 'style': 'TableStyleMedium9'})
                 
-                # Aplica formatação
                 col_valor_unit_idx = COLUNAS_LANCAMENTO.index("valor unitario")
                 col_valor_total_idx = COLUNAS_LANCAMENTO.index("valor total")
                 col_qtde_idx = COLUNAS_LANCAMENTO.index("Qtde")
@@ -305,7 +295,6 @@ def generate_excel(df_lancamentos, df_cad, df_del):
             # --- 3. Aba ITENS_DELETADO ---
             if not df_del.empty:
                 df_del.to_excel(writer, sheet_name="ITENS_DELETADO", index=False)
-                
                 total_deletado = df_del["valor total"].sum() if "valor total" in df_del.columns else 0
                 total_del_row = len(df_del) + 2
                 
@@ -353,18 +342,21 @@ def upload_file():
         result = process_all_files(files)
         
         if result[0] is None:
-             # Limpa a sessão se não houver dados válidos
              session.pop('processed_dfs', None)
              return render_template('index.html', error_message="Nenhum arquivo .har válido encontrado ou dados vazios.")
 
-        # >>> ARMAZENAMENTO NA SESSÃO: Serializa os DataFrames para garantir que o download os encontre <<<
-        processed_dfs = {
-            'lancamentos': result[5].to_json(), # Serializa o DF
-            'mesas_cad': result[6].to_json(), 
-            'itens_del': result[7].to_json()
-        }
-        session['processed_dfs'] = processed_dfs # Armazena na sessão do usuário
-        
+        # >>> ARMAZENAMENTO NA SESSÃO COM 'split' para robustez <<<
+        try:
+            processed_dfs = {
+                'lancamentos': result[5].to_json(orient='split', date_format='iso'),
+                'mesas_cad': result[6].to_json(orient='split', date_format='iso'), 
+                'itens_del': result[7].to_json(orient='split', date_format='iso')
+            }
+            session['processed_dfs'] = processed_dfs
+        except Exception as e:
+            print(f"Erro na serialização para sessão: {e}")
+            return render_template('index.html', error_message="Erro ao salvar dados na sessão. Tente arquivos menores.")
+
         # Retorna o HTML para visualização
         return render_template(
             'relatorio.html',
@@ -380,25 +372,30 @@ def upload_file():
 # NOVA ROTA DE DOWNLOAD
 @app.route('/download_excel', methods=['GET'])
 def download_excel():
-    # >>> RECUPERAÇÃO DA SESSÃO: Deserializa os DataFrames <<<
+    # >>> RECUPERAÇÃO DA SESSÃO COM 'split' e Conversão de Tipos <<<
     if 'processed_dfs' not in session:
         return "Nenhum dado processado encontrado para exportar. Por favor, recarregue os arquivos.", 404
 
     try:
-        # Deserializa e reconstrói os DataFrames a partir dos JSONs
         dados = session['processed_dfs']
-        df_lancamentos = pd.read_json(dados['lancamentos'])
-        df_cad = pd.read_json(dados['mesas_cad'])
-        df_del = pd.read_json(dados['itens_del'])
-    except Exception:
-        return "Erro ao recuperar dados da sessão.", 500
+        # Deserializa forçando o formato 'split'
+        df_lancamentos = pd.read_json(dados['lancamentos'], orient='split')
+        df_cad = pd.read_json(dados['mesas_cad'], orient='split')
+        df_del = pd.read_json(dados['itens_del'], orient='split')
+        
+        # Conversão explícita de Data/Hora para o Excel
+        df_lancamentos['horario'] = pd.to_datetime(df_lancamentos['horario'], errors='coerce')
+        if 'horario_cadastro' in df_cad.columns:
+             df_cad['horario_cadastro'] = pd.to_datetime(df_cad['horario_cadastro'], errors='coerce')
+        df_del['horario'] = pd.to_datetime(df_del['horario'], errors='coerce')
+        
+    except Exception as e:
+        print(f"Erro ao recuperar dados da sessão/deserializar: {e}")
+        return "Erro ao recuperar dados da sessão. Tente recarregar os arquivos.", 500
 
     excel_file = generate_excel(df_lancamentos, df_cad, df_del)
     
     if excel_file:
-        # Após o download, a sessão pode ser limpa se desejado:
-        # session.pop('processed_dfs', None) 
-        
         nome_arquivo = f"Relatorio_HAR_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         
         return send_file(
