@@ -12,8 +12,8 @@ import shutil
 
 # --- Configuração do Flask ---
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = tempfile.gettempdir() # Usa a pasta temporária do sistema
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # Limite de 16MB para upload
+# Aumentado o limite para 100 Megabytes (se o erro Request Entity Too Large persistir)
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024 
 
 # ----------------------------------------------------------------------
 # Regex e Funções de Apoio (Mantidas do BOT2.py)
@@ -148,9 +148,11 @@ def process_all_files(files):
     df_del = pd.DataFrame(todos_itens_deletados)
     
     FUSO_BRASILIA = 'America/Sao_Paulo'
+    
+    # NOVA ORDEM: 'request' movida para o final
     COLUNAS_LANCAMENTO = [
-        "Nº", "request", "response", "produto", "Qtde", "Data", "Hora", 
-        "deletar", "valor unitario", "valor total", "mesa", "arquivo_origem"
+        "Nº", "response", "produto", "Qtde", "Data", "Hora", 
+        "deletar", "valor unitario", "valor total", "mesa", "arquivo_origem", "request" 
     ]
     
     # --- 1. Processamento e Normalização (similar ao BOT2.py) ---
@@ -162,11 +164,11 @@ def process_all_files(files):
         df["horario_norm"] = df["horario_br"].dt.tz_localize(None).dt.floor("s")
         df = df.drop_duplicates(subset=["mesa", "produto", "Qtde", "request", "horario_norm"]).reset_index(drop=True)
         df["Nº"] = df.index + 1
+        # Esta coluna deve ser preenchida manualmente na web, ou ser dinâmica (com checkbox)
         df["deletar"] = "" 
         df["Qtde"] = df["Qtde"].astype(int)
         
-        # Recálculo do valor total estático para RANKING/GERAL (para fins de exibição se o Excel não calcular)
-        # Na exibição HTML, este valor estático será usado.
+        # O valor total estático é usado para o GERAL e RANKING antes de qualquer cancelamento
         df["valor total"] = df["Qtde"] * df["valor unitario"]
         
         # Reordenamento e limpeza de colunas
@@ -187,8 +189,6 @@ def process_all_files(files):
 
     # --- 2. Itens Deletados ---
     if not df_del.empty:
-        # Simplificação para exibição na web: a lógica de merge e total deletado não é crítica aqui,
-        # mas o total_deletado é necessário para o GERAL.
         total_deletado = df_del["valor total"].sum() if "valor total" in df_del.columns else 0
         df_del_final = df_del.drop(columns=["horario"], errors='ignore')
     else:
@@ -196,13 +196,13 @@ def process_all_files(files):
         total_deletado = 0
 
 
-    # --- 3. Aba GERAL (Simplificada com as novas fórmulas) ---
+    # --- 3. Aba GERAL (Com fórmula de comissão corrigida) ---
     total_valor = df["valor total"].sum() if not df.empty else 0
     
-    # FÓRMULAS VINDAS DO USUÁRIO
-    # Comissão 6% =(B2*0,06)+140
-    comissao = (total_valor * 0.06) + 140
-    # Taxa 4% =B2*0,04
+    # FÓRMULAS FINAIS DO USUÁRIO
+    # Comissão 6% = B2 * 0.06 (Retirado o + 140)
+    comissao = total_valor * 0.06
+    # Taxa 4% = B2 * 0.04
     taxa = total_valor * 0.04
     
     dados_geral = pd.DataFrame({
@@ -217,8 +217,9 @@ def process_all_files(files):
             dados_geral[col] = dados_geral[col].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
 
-    # --- 4. Aba RANKING ---
+    # --- 4. Aba RANKING (Ordenação confirmada) ---
     if not df.empty:
+        # Ordenação já está decrescente (ascending=False)
         df_ranking = df.groupby("mesa")["valor total"].sum().reset_index().sort_values(by="valor total", ascending=False)
         df_ranking["Posição"] = df_ranking.index + 1
         df_ranking_final = df_ranking[["Posição", "mesa", "valor total"]]
@@ -241,20 +242,16 @@ def process_all_files(files):
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
-        # Verifica se foi enviado algum arquivo
         if 'har_files' not in request.files:
             return redirect(request.url)
         
-        # request.files é um MultiDict, podemos processar todos os arquivos
         files = request.files
         
-        # Processa os arquivos
         lanc_html, cad_html, del_html, geral_html, ranking_html = process_all_files(files)
         
         if lanc_html is None:
              return render_template('index.html', error_message="Nenhum arquivo .har válido encontrado ou dados vazios.")
 
-        # Renderiza o relatório
         return render_template(
             'relatorio.html',
             lancamentos=lanc_html,
@@ -264,15 +261,9 @@ def upload_file():
             ranking=ranking_html
         )
         
-    # GET request: mostra o formulário de upload
     return render_template('index.html')
 
 if __name__ == '__main__':
-    # Cria a pasta de templates se não existir
     if not os.path.exists('templates'):
         os.makedirs('templates')
-    
-    # Se você for rodar localmente, use:
-    # app.run(debug=True)
-    # Se for hospedar, use:
     app.run(host='0.0.0.0', port=5000)
