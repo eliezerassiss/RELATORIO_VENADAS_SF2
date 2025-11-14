@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: har-processor-app # Defina um nome único para o seu serviço
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
-    plan: free

@@ -1,0 +1,16 @@
+# Conteúdo recomendado para .gitignore em projetos Python
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+.mypy_cache/
+.pytest_cache/
+.vscode/
+
+# Ignorar dependências específicas do Windows, por segurança
+pywin32.pth
+pywin32_system32
