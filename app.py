@@ -18,9 +18,8 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024 
 app.secret_key = 'sua_chave_secreta_muito_longa_e_aleatoria_para_o_render' 
 
-# Configuração do Banco de Dados
-# >>> ATENÇÃO: Mude esta linha para a URL do seu PostgreSQL no Render em produção! <<<
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db' 
+# Configuração do Banco de Dados: Prioriza a variável de ambiente (Render/PostgreSQL)
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(weeks=3) 
 
@@ -32,7 +31,7 @@ login_manager.login_view = 'login'
 login_manager.login_message = "Por favor, faça login para acessar esta página."
 
 # ----------------------------------------------------------------------
-# 1. MODELOS DO BANCO DE DADOS (COM CORREÇÃO DE TYPERROR)
+# 1. MODELOS DO BANCO DE DADOS
 # ----------------------------------------------------------------------
 
 class User(db.Model, UserMixin):
@@ -55,10 +54,8 @@ class HarFile(db.Model):
     filename = db.Column(db.String(100), nullable=False)
     data_pickle = db.Column(db.LargeBinary, nullable=False) 
     
-    # CORRETO: SQLAlchemy chama datetime.utcnow na inserção
     timestamp = db.Column(db.DateTime, default=datetime.utcnow) 
-    
-    # CORREÇÃO TYPERROR: Usa lambda para calcular a data de expiração no momento da inserção
+    # Usando lambda para calcular a data de expiração no momento da inserção (corrige TypeError)
     expiration_date = db.Column(db.DateTime, default=lambda: datetime.utcnow() + timedelta(weeks=3))
     
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) 
@@ -118,6 +115,7 @@ def process_har_file(file_content, file_name):
                 except:
                     horario = started_date_time
 
+            # 1. Captura Lançamento de Produto
             match_lancamento = regex_url.search(url)
             if match_lancamento:
                 produto_raw = match_lancamento.group("produto")
@@ -141,6 +139,7 @@ def process_har_file(file_content, file_name):
                 })
                 continue
 
+            # 2. Captura Cadastro de Mesa
             match_cadastro = regex_cadastro_mesa.search(url)
             if match_cadastro and response_status == 200:
                 mesa_nome = match_cadastro.group("mesa")
@@ -151,6 +150,7 @@ def process_har_file(file_content, file_name):
                 })
                 continue
 
+            # 3. Captura Itens Deletados
             if "/inc/del_produtos.php" in url and method.upper() == "POST":
                 match_del = regex_deletado.search(post_data)
                 if match_del:
@@ -399,10 +399,12 @@ def upload_file():
             session['current_file_id'] = new_file.id
             
         except Exception as e:
+            # Em caso de erro de DB ou serialização, informa o usuário e limpa o ID da sessão.
             flash(f"Erro ao salvar dados no banco de dados: {e}", 'danger')
             return redirect(url_for('upload_file'))
 
 
+        # Retorna o HTML para visualização
         return render_template(
             'relatorio.html',
             lancamentos=result[0],
@@ -432,6 +434,7 @@ def download_excel():
         return redirect(url_for('upload_file'))
 
     try:
+        # Desserializa o objeto binário para recuperar os DataFrames
         dados = pickle.loads(har_file.data_pickle)
         
         df_lancamentos = dados['lancamentos']
@@ -468,6 +471,8 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
+        
+        # AQUI OCORRE O ERRO SE O BANCO ESTIVER OFFLINE
         user = User.query.filter_by(username=username).first()
         
         if user and user.check_password(password):
@@ -560,6 +565,7 @@ if __name__ == '__main__':
         os.makedirs('templates')
 
     with app.app_context():
+        # db.create_all() deve ser chamado dentro do contexto, como está:
         db.create_all()
         
         if not User.query.filter_by(is_admin=True).first():
