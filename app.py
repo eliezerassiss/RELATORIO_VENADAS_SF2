@@ -7,11 +7,11 @@ import urllib.parse
 from flask import Flask, request, render_template, redirect, url_for, send_file, session, flash
 from werkzeug.utils import secure_filename
 from io import BytesIO
-import pickle # Usado para serializar DataFrames no banco
+import pickle 
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-import xlsxwriter # Necessário para a função generate_excel
+import xlsxwriter 
 
 # --- Configuração do Flask e Banco de Dados ---
 app = Flask(__name__)
@@ -22,7 +22,7 @@ app.secret_key = 'sua_chave_secreta_muito_longa_e_aleatoria_para_o_render'
 # >>> ATENÇÃO: Mude esta linha para a URL do seu PostgreSQL no Render em produção! <<<
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db' 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(weeks=3) # Duração de 3 semanas
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(weeks=3) 
 
 db = SQLAlchemy(app)
 
@@ -32,7 +32,7 @@ login_manager.login_view = 'login'
 login_manager.login_message = "Por favor, faça login para acessar esta página."
 
 # ----------------------------------------------------------------------
-# 1. MODELOS DO BANCO DE DADOS
+# 1. MODELOS DO BANCO DE DADOS (COM CORREÇÃO DE TYPERROR)
 # ----------------------------------------------------------------------
 
 class User(db.Model, UserMixin):
@@ -54,8 +54,12 @@ class HarFile(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(100), nullable=False)
     data_pickle = db.Column(db.LargeBinary, nullable=False) 
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    expiration_date = db.Column(db.DateTime, default=datetime.utcnow + timedelta(weeks=3))
+    
+    # CORRETO: SQLAlchemy chama datetime.utcnow na inserção
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow) 
+    
+    # CORREÇÃO TYPERROR: Usa lambda para calcular a data de expiração no momento da inserção
+    expiration_date = db.Column(db.DateTime, default=lambda: datetime.utcnow() + timedelta(weeks=3))
     
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) 
 
@@ -66,7 +70,7 @@ def load_user(user_id):
 
 
 # ----------------------------------------------------------------------
-# 2. LÓGICA DE PROCESSAMENTO HAR E EXCEL
+# 2. LÓGICA DE PROCESSAMENTO HAR E EXCEL (Mantida)
 # ----------------------------------------------------------------------
 
 regex_url = re.compile(r"nomeprod=(?P<produto>.+?)&.*mesa=(?P<mesa>[^&]+).*quant=(?P<quant>\d+)", re.IGNORECASE)
@@ -88,7 +92,6 @@ def parse_nomeprod(produto_str):
         return produto_str, 0.0
 
 def process_har_file(file_content, file_name):
-    # ... (O restante da função process_har_file é mantido idêntico) ...
     try:
         har_data = json.loads(file_content)
     except Exception:
@@ -115,7 +118,6 @@ def process_har_file(file_content, file_name):
                 except:
                     horario = started_date_time
 
-            # 1. Captura Lançamento de Produto
             match_lancamento = regex_url.search(url)
             if match_lancamento:
                 produto_raw = match_lancamento.group("produto")
@@ -139,7 +141,6 @@ def process_har_file(file_content, file_name):
                 })
                 continue
 
-            # 2. Captura Cadastro de Mesa
             match_cadastro = regex_cadastro_mesa.search(url)
             if match_cadastro and response_status == 200:
                 mesa_nome = match_cadastro.group("mesa")
@@ -150,7 +151,6 @@ def process_har_file(file_content, file_name):
                 })
                 continue
 
-            # 3. Captura Itens Deletados
             if "/inc/del_produtos.php" in url and method.upper() == "POST":
                 match_del = regex_deletado.search(post_data)
                 if match_del:
@@ -171,7 +171,6 @@ def process_har_file(file_content, file_name):
 
 
 def process_all_files(files):
-    # ... (Processamento principal mantido) ...
     todos_lancamentos = []
     todas_mesas_cad = []
     todos_itens_deletados = []
@@ -387,10 +386,8 @@ def upload_file():
                 'mesas_cad': result[6], 
                 'itens_del': result[7]
             }
-            # Serializa os DataFrames em um único objeto binário usando pickle
             data_pickle = pickle.dumps(data_to_store)
 
-            # Cria a entrada no banco
             new_file = HarFile(
                 filename=f"Relatorio_HAR_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 data_pickle=data_pickle,
@@ -399,7 +396,6 @@ def upload_file():
             db.session.add(new_file)
             db.session.commit()
             
-            # Armazena o ID do arquivo na sessão para o download
             session['current_file_id'] = new_file.id
             
         except Exception as e:
@@ -407,7 +403,6 @@ def upload_file():
             return redirect(url_for('upload_file'))
 
 
-        # Retorna o HTML para visualização
         return render_template(
             'relatorio.html',
             lancamentos=result[0],
@@ -429,7 +424,6 @@ def download_excel():
         flash("Nenhum arquivo recente encontrado para exportar. Por favor, faça um novo upload.", 'danger')
         return redirect(url_for('upload_file'))
 
-    # Busca o arquivo no BD, verificando se pertence ao usuário
     har_file = HarFile.query.filter_by(id=file_id, user_id=current_user.id).first()
     
     if not har_file:
@@ -438,7 +432,6 @@ def download_excel():
         return redirect(url_for('upload_file'))
 
     try:
-        # Deserializa o objeto binário para recuperar os DataFrames
         dados = pickle.loads(har_file.data_pickle)
         
         df_lancamentos = dados['lancamentos']
@@ -553,7 +546,6 @@ def manage_users():
     users_pending = User.query.filter_by(is_approved=False).order_by(User.username).all()
     users_active = User.query.filter_by(is_approved=True).order_by(User.username).all()
 
-    # Limpa arquivos expirados
     expired_files = HarFile.query.filter(HarFile.expiration_date < datetime.utcnow()).delete()
     db.session.commit()
     
@@ -570,7 +562,6 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
         
-        # Cria o usuário administrador único
         if not User.query.filter_by(is_admin=True).first():
             admin_user = User(username='admin', is_admin=True, is_approved=True)
             admin_user.set_password('SuaSenhaAdminSecreta123!') 
