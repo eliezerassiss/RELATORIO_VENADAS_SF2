@@ -19,14 +19,14 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 app.secret_key = 'sua_chave_secreta_muito_longa_e_aleatoria_para_o_render' 
 
 # Configuração do Banco de Dados: Prioriza a variável de ambiente (Render/PostgreSQL)
-# --- CORREÇÃO DE CONEXÃO POSTGRESQL (SSL/TLS) ---
 db_url = os.environ.get('DATABASE_URL')
 if db_url:
-    # A Render URI pode usar 'postgres://' (deprecated). Conversão para 'postgresql://' e adição do parâmetro SSL.
-    db_url = db_url.replace("://", "ql://", 1).replace("postgres", "postgresql", 1) + "?sslmode=require"
-app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///database.db'
-# ----------------------------------------------------
+    # 1. Corrige o dialeto para 'postgresql' e adiciona o parâmetro SSL
+    db_url = db_url.replace("postgres://", "postgresql://", 1) 
+    db_url += "?sslmode=require"
 
+# Usa o URL corrigido do Render ou o SQLite local
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(weeks=3) 
 
