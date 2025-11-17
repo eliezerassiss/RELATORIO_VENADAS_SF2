@@ -1,6 +1,6 @@
 Flask
 pandas
 gunicorn
-xlsxwriter  <-- CRUCIAL
+xlsxwriter
 Flask-SQLAlchemy
 Flask-Login
