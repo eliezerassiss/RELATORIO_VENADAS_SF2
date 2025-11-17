@@ -18,15 +18,22 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024 
 app.secret_key = 'sua_chave_secreta_muito_longa_e_aleatoria_para_o_render' 
 
-# Configuração do Banco de Dados: Prioriza a variável de ambiente (Render/PostgreSQL)
-db_url = os.environ.get('DATABASE_URL')
-if db_url:
-    # 1. Corrige o dialeto para 'postgresql' e adiciona o parâmetro SSL
-    db_url = db_url.replace("postgres://", "postgresql://", 1) 
-    db_url += "?sslmode=require"
+# Configuração do Banco de Dados: Prioriza a conexão INTERNA do Render
+db_url_external = os.environ.get('DATABASE_URL')
+db_url_internal = os.environ.get('INTERNAL_DATABASE_URL')
 
-# Usa o URL corrigido do Render ou o SQLite local
-app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///database.db'
+if db_url_internal:
+    # 1. Prioriza a URL interna para conexões estáveis (sem necessidade de sslmode)
+    db_uri = db_url_internal.replace("postgres://", "postgresql://", 1)
+elif db_url_external:
+    # 2. Fallback para a URL externa com correção SSL
+    db_uri = db_url_external.replace("postgres://", "postgresql://", 1)
+    db_uri += "?sslmode=require"
+else:
+    # 3. Fallback para desenvolvimento local
+    db_uri = 'sqlite:///database.db'
+
+app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(weeks=3) 
 
@@ -73,7 +80,7 @@ def load_user(user_id):
 
 
 # ----------------------------------------------------------------------
-# 2. LÓGICA DE PROCESSAMENTO HAR E EXCEL
+# 2. LÓGICA DE PROCESSAMENTO HAR E EXCEL (Mantida)
 # ----------------------------------------------------------------------
 
 regex_url = re.compile(r"nomeprod=(?P<produto>.+?)&.*mesa=(?P<mesa>[^&]+).*quant=(?P<quant>\d+)", re.IGNORECASE)
@@ -185,9 +192,9 @@ def process_all_files(files):
         try:
             if file and file.filename.endswith('.har'):
                 file.seek(0) 
-                file_content = file.read().decode('utf-8')
+                content = file.read().decode('utf-8')
                 
-                lanc, cad, delet = process_har_file(file_content, secure_filename(file.filename))
+                lanc, cad, delet = process_har_file(content, secure_filename(file.filename))
                 todos_lancamentos.extend(lanc)
                 todas_mesas_cad.extend(cad)
                 todos_itens_deletados.extend(delet)
