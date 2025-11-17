@@ -19,7 +19,14 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 app.secret_key = 'sua_chave_secreta_muito_longa_e_aleatoria_para_o_render' 
 
 # Configuração do Banco de Dados: Prioriza a variável de ambiente (Render/PostgreSQL)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'sqlite:///database.db'
+# --- CORREÇÃO DE CONEXÃO POSTGRESQL (SSL/TLS) ---
+db_url = os.environ.get('DATABASE_URL')
+if db_url:
+    # A Render URI pode usar 'postgres://' (deprecated). Conversão para 'postgresql://' e adição do parâmetro SSL.
+    db_url = db_url.replace("://", "ql://", 1).replace("postgres", "postgresql", 1) + "?sslmode=require"
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///database.db'
+# ----------------------------------------------------
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(weeks=3) 
 
@@ -55,7 +62,6 @@ class HarFile(db.Model):
     data_pickle = db.Column(db.LargeBinary, nullable=False) 
     
     timestamp = db.Column(db.DateTime, default=datetime.utcnow) 
-    # Usando lambda para calcular a data de expiração no momento da inserção (corrige TypeError)
     expiration_date = db.Column(db.DateTime, default=lambda: datetime.utcnow() + timedelta(weeks=3))
     
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) 
@@ -67,7 +73,7 @@ def load_user(user_id):
 
 
 # ----------------------------------------------------------------------
-# 2. LÓGICA DE PROCESSAMENTO HAR E EXCEL (Mantida)
+# 2. LÓGICA DE PROCESSAMENTO HAR E EXCEL
 # ----------------------------------------------------------------------
 
 regex_url = re.compile(r"nomeprod=(?P<produto>.+?)&.*mesa=(?P<mesa>[^&]+).*quant=(?P<quant>\d+)", re.IGNORECASE)
@@ -399,7 +405,6 @@ def upload_file():
             session['current_file_id'] = new_file.id
             
         except Exception as e:
-            # Em caso de erro de DB ou serialização, informa o usuário e limpa o ID da sessão.
             flash(f"Erro ao salvar dados no banco de dados: {e}", 'danger')
             return redirect(url_for('upload_file'))
 
@@ -434,7 +439,6 @@ def download_excel():
         return redirect(url_for('upload_file'))
 
     try:
-        # Desserializa o objeto binário para recuperar os DataFrames
         dados = pickle.loads(har_file.data_pickle)
         
         df_lancamentos = dados['lancamentos']
@@ -472,7 +476,6 @@ def login():
         username = request.form.get('username')
         password = request.form.get('password')
         
-        # AQUI OCORRE O ERRO SE O BANCO ESTIVER OFFLINE
         user = User.query.filter_by(username=username).first()
         
         if user and user.check_password(password):
@@ -565,7 +568,6 @@ if __name__ == '__main__':
         os.makedirs('templates')
 
     with app.app_context():
-        # db.create_all() deve ser chamado dentro do contexto, como está:
         db.create_all()
         
         if not User.query.filter_by(is_admin=True).first():
